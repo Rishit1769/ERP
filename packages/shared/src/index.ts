@@ -79,12 +79,16 @@ export function parseStudentUid(uid: string) {
 export const CsvRowSchema = z.object({
   erp_id: z
     .string()
-    .min(2, "UID too short")
+    .min(2, "ERP ID too short")
     .transform((v) => v.toUpperCase().trim())
     .refine(
-      (v) => /^E[A-Z0-9]+$/.test(v) || STUDENT_UID_REGEX.test(v),
-      "UID format: employees E1001, students startYear-DeptDivRoll-endYear (e.g. 2025-COMPSA01-2029)"
+      (v) => /^E[A-Z0-9]+$/.test(v) || /^S[A-Z0-9]+$/.test(v),
+      "ERP ID: students must start with S (e.g. S2001), employees with E (e.g. E1001)"
     ),
+  uid: z
+    .string()
+    .optional()
+    .transform((v) => (v ?? "").trim() || undefined),
   name: z.string().min(2, "Name must be at least 2 characters"),
   department: z
     .string()

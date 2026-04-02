@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import api from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
+import { TeacherInfoPopup } from "@/components/ui/teacher-info-popup";
 
 interface TimetableSlot {
   id: number;
@@ -13,6 +14,7 @@ interface TimetableSlot {
   room: string;
   subject_name: string;
   teacher_name: string;
+  teacher_erp_id: string;
   year: number;
   label: string;
 }
@@ -52,7 +54,7 @@ export default function AdminTimetablePage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    api.get("/admin/divisions").then(({ data }) => {
+    api.get<{ id: number; year: number; label: string; dept_code: string }[]>("/admin/divisions").then(({ data }) => {
       setDivisions(data);
       setDivsLoading(false);
     });
@@ -62,7 +64,7 @@ export default function AdminTimetablePage() {
     if (!selectedDiv) return;
     setViewLoading(true);
     api
-      .get(`/timetable/division/${selectedDiv}`)
+      .get<TimetableSlot[]>(`/timetable/division/${selectedDiv}`)
       .then(({ data }) => setSlots(data))
       .finally(() => setViewLoading(false));
   }, [selectedDiv]);
@@ -74,12 +76,12 @@ export default function AdminTimetablePage() {
     try {
       const form = new FormData();
       form.append("file", csvFile);
-      const { data } = await api.post("/timetable/import-csv", form, {
+      const { data } = await api.post<{ message: string; inserted: number; skipped: number; errors: number; skipped_details: string[]; error_details: string[] }>("/timetable/import-csv", form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setImportResult(data);
       if (selectedDiv) {
-        api.get(`/timetable/division/${selectedDiv}`).then(({ data }) => setSlots(data));
+        api.get<TimetableSlot[]>(`/timetable/division/${selectedDiv}`).then(({ data }) => setSlots(data));
       }
     } catch (err: any) {
       setImportResult(
@@ -97,12 +99,12 @@ export default function AdminTimetablePage() {
     }
   }
 
-  function downloadSample() {
+  function downloadTemplate() {
     const blob = new Blob([SAMPLE_CSV], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "timetable_sample.csv";
+    a.download = "timetable_template.csv";
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -135,31 +137,15 @@ export default function AdminTimetablePage() {
       {activeTab === "import" && (
         <div className="space-y-6">
           <Card>
-            <CardHeader><CardTitle>CSV Format</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-sm text-gray-600">
-                Upload a timetable CSV. Rows with room or teacher conflicts are skipped. Subject assignments are auto-created if missing.
-              </p>
-              <div className="overflow-x-auto rounded-md border bg-gray-50 p-3 font-mono text-xs">
-                dept_code, year, division, subject_code, teacher_erp_id, type, batch, day, start_time, end_time, room
-              </div>
-              <ul className="space-y-1 text-xs text-gray-500">
-                <li><strong>type</strong>: THEORY or PRACTICAL</li>
-                <li><strong>batch</strong>: optional (e.g. P1, P2) — leave blank for theory</li>
-                <li><strong>day</strong>: MON | TUE | WED | THU | FRI | SAT</li>
-                <li><strong>start_time / end_time</strong>: HH:MM (24-hour)</li>
-              </ul>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0">
+              <CardTitle>Upload Timetable CSV</CardTitle>
               <button
-                onClick={downloadSample}
+                onClick={downloadTemplate}
                 className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-100"
               >
-                Download Sample CSV
+                Download Template CSV
               </button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle>Upload Timetable CSV</CardTitle></CardHeader>
+            </CardHeader>
             <CardContent className="space-y-4">
               <input
                 ref={fileRef}
@@ -259,7 +245,7 @@ export default function AdminTimetablePage() {
                             <td className="py-2 pr-4 font-medium">{DAY_LABELS[day]}</td>
                             <td className="py-2 pr-4 text-gray-600">{s.start_time}–{s.end_time}</td>
                             <td className="py-2 pr-4">{s.subject_name}</td>
-                            <td className="py-2 pr-4">{s.teacher_name}</td>
+                            <td className="py-2 pr-4"><TeacherInfoPopup erpId={s.teacher_erp_id} name={s.teacher_name} /></td>
                             <td className="py-2 text-gray-500">{s.room}</td>
                           </tr>
                         ))

@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import runMigrations from "./db/migrate";
 import { ensureBucket } from "./lib/minio";
 import { scheduleWeeklyAttendanceEmail } from "./jobs/weeklyAttendanceEmail";
+import { scheduleMissedAttendanceNotifications } from "./jobs/missedAttendanceNotifications";
 
 import authRouter from "./routes/auth";
 import importRouter from "./routes/import";
@@ -19,6 +20,9 @@ import proxyRouter from "./routes/proxy";
 import materialsRouter from "./routes/materials";
 import adminRouter from "./routes/admin";
 import resultsRouter from "./routes/results";
+import lessonPlanRouter from "./routes/lessonPlan";
+import achievementsRouter from "./routes/achievements";
+import notificationsRouter from "./routes/notifications";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -52,6 +56,9 @@ app.use("/proxy", proxyRouter);
 app.use("/materials", materialsRouter);
 app.use("/admin", adminRouter);
 app.use("/results", resultsRouter);
+app.use("/lesson-plan", lessonPlanRouter);
+app.use("/achievements", achievementsRouter);
+app.use("/notifications", notificationsRouter);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
@@ -89,6 +96,7 @@ async function start() {
 
     // Schedule cron jobs
     scheduleWeeklyAttendanceEmail();
+    scheduleMissedAttendanceNotifications();
 
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`[STARTUP] CloudCampus API running on port ${PORT}`);

@@ -1,19 +1,25 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useRef, type ChangeEvent, type FormEvent } from "react";
 import api from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { TeacherInfoPopup } from "@/components/ui/teacher-info-popup";
+import toast from "react-hot-toast";
+import { Upload, Download, Trash2 } from "lucide-react";
 
 interface TimetableSlot {
   id: number;
-  division_name: string;
   subject_name: string;
   teacher_name: string;
+  teacher_erp_id: string;
   day: string;
   start_time: string;
   end_time: string;
   room: string;
+  type: string;
+  batch_label: string | null;
 }
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT"];
@@ -22,133 +28,147 @@ const DAY_LABELS: Record<string, string> = {
   THU: "Thursday", FRI: "Friday", SAT: "Saturday",
 };
 
-const SAMPLE_CSV = `dept_code,year,division,subject_code,teacher_erp_id,type,batch,day,start_time,end_time,room
-COMPS,2,A,DS,E1002,THEORY,,MON,09:00,10:00,C-301
-COMPS,2,A,DSL,E1003,PRACTICAL,P1,WED,14:00,16:00,C-Lab1`;
+type Tab = "view" | "upload";
 
 export default function HodTimetablePage() {
-  const [activeTab, setActiveTab] = useState<"view" | "import">("view");
+  const [tab, setTab] = useState<Tab>("view");
 
-  // ── View state ──────────────────────────────────────────────────────────────
+  // ── View tab ─────────────────────────────────────────────────────────────
   const [slots, setSlots] = useState<TimetableSlot[]>([]);
   const [divisions, setDivisions] = useState<{ id: number; year: number; label: string }[]>([]);
   const [selectedDiv, setSelectedDiv] = useState("");
-  const [viewLoading, setViewLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [divsLoading, setDivsLoading] = useState(true);
+  const [clearing, setClearing] = useState(false);
 
-  // ── Import state ────────────────────────────────────────────────────────────
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<{
-    message: string;
-    inserted: number;
-    skipped: number;
-    errors: number;
-    skipped_details: string[];
-    error_details: string[];
+  // ── Upload tab ────────────────────────────────────────────────────────────
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{
+    inserted: number; divisions_updated: number; errors: number; error_details: string[]
   } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    api.get("/roles/divisions").then(({ data }) => {
+    api.get<{ id: number; year: number; label: string }[]>("/roles/divisions").then(({ data }) => {
       setDivisions(data);
-      setViewLoading(false);
+      setDivsLoading(false);
     });
   }, []);
 
-  useEffect(() => {
-    if (!selectedDiv) return;
-    setViewLoading(true);
-    api
-      .get(`/timetable/division/${selectedDiv}`)
+  function loadSlots(divId: string) {
+    if (!divId) return;
+    setLoading(true);
+    api.get<TimetableSlot[]>(`/timetable/division/${divId}`)
       .then(({ data }) => setSlots(data))
-      .finally(() => setViewLoading(false));
+      .catch(() => setSlots([]))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    if (selectedDiv) loadSlots(selectedDiv);
+    else setSlots([]);
   }, [selectedDiv]);
 
-  async function handleImport() {
-    if (!csvFile) return;
-    setImporting(true);
-    setImportResult(null);
+  async function handleClearDiv() {
+    if (!selectedDiv) return;
+    setClearing(true);
     try {
-      const form = new FormData();
-      form.append("file", csvFile);
-      const { data } = await api.post("/timetable/import-csv", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setImportResult(data);
-      if (selectedDiv) {
-        api.get(`/timetable/division/${selectedDiv}`).then(({ data }) => setSlots(data));
-      }
-    } catch (err: any) {
-      setImportResult(
-        err?.response?.data ?? {
-          message: "Upload failed",
-          inserted: 0,
-          skipped: 0,
-          errors: 1,
-          skipped_details: [],
-          error_details: [String(err)],
-        }
-      );
+      await api.delete(`/timetable/division/${selectedDiv}`);
+      toast.success("Timetable cleared for this division");
+      setSlots([]);
+    } catch {
+      toast.error("Failed to clear timetable");
     } finally {
-      setImporting(false);
+      setClearing(false);
     }
   }
 
-  function downloadSample() {
-    const blob = new Blob([SAMPLE_CSV], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "timetable_sample.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+  async function downloadTemplate() {
+    try {
+      const res = await api.get("/timetable/template", { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "timetable_template.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Could not download template");
+    }
   }
+
+  async function handleUpload(e: FormEvent) {
+    e.preventDefault();
+    if (!uploadFile) return;
+    setUploading(true);
+    setUploadResult(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", uploadFile);
+      const { data } = await api.post("/timetable/upload-csv", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setUploadResult(data);
+      toast.success(`${data.inserted} slot(s) uploaded across ${data.divisions_updated} division(s)`);
+      // Refresh view tab if the updated division is selected
+      if (selectedDiv) loadSlots(selectedDiv);
+    } catch (err: any) {
+      const d = err?.response?.data;
+      setUploadResult(d ?? null);
+      toast.error(d?.error || "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const tabClass = (t: Tab) =>
+    `px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+      tab === t ? "border-primary text-primary" : "border-transparent text-gray-500 hover:text-gray-700"
+    }`;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">Timetable</h2>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setActiveTab("view")}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              activeTab === "view"
-                ? "bg-primary text-white"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
-          >
-            View
-          </button>
-          <button
-            onClick={() => setActiveTab("import")}
-            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              activeTab === "import"
-                ? "bg-primary text-white"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
-          >
-            Import CSV
-          </button>
-        </div>
+      <h2 className="text-2xl font-bold">Timetable</h2>
+
+      {/* Tabs */}
+      <div className="flex border-b">
+        <button className={tabClass("view")} onClick={() => setTab("view")}>View Timetable</button>
+        <button className={tabClass("upload")} onClick={() => setTab("upload")}>Upload Timetable (CSV)</button>
       </div>
 
-      {/* ── View Tab ─────────────────────────────────────────────── */}
-      {activeTab === "view" && (
-        <div className="space-y-4">
-          <select
-            value={selectedDiv}
-            onChange={(e) => setSelectedDiv(e.target.value)}
-            className="rounded-md border border-gray-300 px-3 py-2 text-sm"
-          >
-            <option value="">Select division…</option>
-            {divisions.map((d) => (
-              <option key={d.id} value={d.id}>Year {d.year} – Div {d.label}</option>
-            ))}
-          </select>
+      {/* ── VIEW TAB ─────────────────────────────────────────────────────── */}
+      {tab === "view" && (
+        <>
+          {divsLoading ? <Spinner /> : (
+            <div className="flex flex-wrap items-center gap-3">
+              <select
+                value={selectedDiv}
+                onChange={(e) => { setSelectedDiv(e.target.value); setSlots([]); }}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+              >
+                <option value="">Select division…</option>
+                {divisions.map((d) => (
+                  <option key={d.id} value={d.id}>Year {d.year} – Div {d.label}</option>
+                ))}
+              </select>
 
-          {viewLoading && selectedDiv ? (
-            <Spinner />
-          ) : slots.length > 0 ? (
+              {selectedDiv && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleClearDiv}
+                  disabled={clearing}
+                  className="text-red-600 border-red-300 hover:bg-red-50"
+                >
+                  {clearing ? <Spinner className="h-4 w-4" /> : <Trash2 className="h-4 w-4 mr-1" />}
+                  Clear Timetable
+                </Button>
+              )}
+            </div>
+          )}
+
+          {loading ? <Spinner /> : slots.length > 0 ? (
             <Card>
               <CardContent className="overflow-x-auto py-4">
                 <table className="w-full text-sm">
@@ -158,6 +178,7 @@ export default function HodTimetablePage() {
                       <th className="py-2 pr-4">Time</th>
                       <th className="py-2 pr-4">Subject</th>
                       <th className="py-2 pr-4">Teacher</th>
+                      <th className="py-2 pr-4">Type</th>
                       <th className="py-2">Room</th>
                     </tr>
                   </thead>
@@ -171,7 +192,12 @@ export default function HodTimetablePage() {
                             <td className="py-2 pr-4 font-medium">{DAY_LABELS[day]}</td>
                             <td className="py-2 pr-4 text-gray-600">{s.start_time}–{s.end_time}</td>
                             <td className="py-2 pr-4">{s.subject_name}</td>
-                            <td className="py-2 pr-4">{s.teacher_name}</td>
+                            <td className="py-2 pr-4">
+                              <TeacherInfoPopup erpId={s.teacher_erp_id} name={s.teacher_name} />
+                            </td>
+                            <td className="py-2 pr-4 text-xs text-gray-500">
+                              {s.type}{s.batch_label ? ` (${s.batch_label})` : ""}
+                            </td>
                             <td className="py-2 text-gray-500">{s.room}</td>
                           </tr>
                         ))
@@ -181,94 +207,79 @@ export default function HodTimetablePage() {
               </CardContent>
             </Card>
           ) : selectedDiv ? (
-            <p className="text-gray-500">No timetable slots found.</p>
+            <p className="text-gray-500">No timetable slots found for this division.</p>
           ) : null}
-        </div>
+        </>
       )}
 
-      {/* ── Import Tab ───────────────────────────────────────────── */}
-      {activeTab === "import" && (
-        <div className="space-y-6">
+      {/* ── UPLOAD TAB ───────────────────────────────────────────────────── */}
+      {tab === "upload" && (
+        <>
           <Card>
             <CardHeader>
-              <CardTitle>CSV Format</CardTitle>
+              <CardTitle>Upload Timetable CSV</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-sm text-gray-600">
-                Upload a CSV with the following columns. Rows with room or teacher conflicts are skipped gracefully.
-              </p>
-              <div className="overflow-x-auto rounded-md border bg-gray-50 p-3 font-mono text-xs">
-                dept_code, year, division, subject_code, teacher_erp_id, type, batch, day, start_time, end_time, room
-              </div>
-              <ul className="space-y-1 text-xs text-gray-500">
-                <li><strong>type</strong>: THEORY or PRACTICAL</li>
-                <li><strong>batch</strong>: optional (e.g. P1, P2) — leave blank for theory slots</li>
-                <li><strong>day</strong>: MON | TUE | WED | THU | FRI | SAT</li>
-                <li><strong>start_time / end_time</strong>: HH:MM (24-hour format)</li>
-              </ul>
-              <button
-                onClick={downloadSample}
-                className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-100"
-              >
-                Download Sample CSV
-              </button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle>Upload Timetable CSV</CardTitle></CardHeader>
             <CardContent className="space-y-4">
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".csv"
-                className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-sm file:text-white hover:file:bg-primary/90"
-                onChange={(e) => {
-                  setCsvFile(e.target.files?.[0] ?? null);
-                  setImportResult(null);
-                }}
-              />
-              <button
-                onClick={handleImport}
-                disabled={!csvFile || importing}
-                className="rounded-md bg-primary px-4 py-2 text-sm text-white disabled:opacity-50 hover:bg-primary/90"
-              >
-                {importing ? "Uploading…" : "Import"}
-              </button>
+              <div className="rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800 space-y-1">
+                <p className="font-medium">CSV format</p>
+                <p className="text-xs font-mono">division_year, division_label, day, start_time, end_time, room, subject_code, teacher_erp_id, type, batch_label</p>
+                <ul className="text-xs mt-1 space-y-0.5 text-blue-700">
+                  <li>• <strong>day</strong>: MON, TUE, WED, THU, FRI, SAT</li>
+                  <li>• <strong>time</strong>: HH:MM (24-hour, e.g. 09:00)</li>
+                  <li>• <strong>type</strong>: THEORY or PRACTICAL</li>
+                  <li>• <strong>batch_label</strong>: optional (e.g. Batch-A for practicals)</li>
+                  <li>• Uploading <strong>replaces</strong> all existing slots for that division.</li>
+                </ul>
+              </div>
 
-              {importResult && (
-                <div
-                  className={`rounded-md border p-4 text-sm ${
-                    importResult.errors > 0 || importResult.skipped > 0
-                      ? "border-yellow-300 bg-yellow-50"
-                      : "border-green-300 bg-green-50"
-                  }`}
-                >
-                  <p className="font-semibold">{importResult.message}</p>
-                  <p className="text-gray-600">
-                    Inserted: {importResult.inserted} · Skipped: {importResult.skipped} · Errors: {importResult.errors}
+              <form onSubmit={handleUpload} className="space-y-3">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".csv"
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const f = e.target.files?.[0];
+                    if (f?.name.endsWith(".csv")) { setUploadFile(f); setUploadResult(null); }
+                    else toast.error("Please select a .csv file");
+                  }}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-medium file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                />
+                {uploadFile && (
+                  <p className="text-sm text-gray-600">
+                    <strong>{uploadFile.name}</strong> ({(uploadFile.size / 1024).toFixed(1)} KB)
                   </p>
-                  {importResult.skipped_details.length > 0 && (
-                    <details className="mt-2">
-                      <summary className="cursor-pointer text-yellow-700">Skipped rows ({importResult.skipped})</summary>
-                      <ul className="mt-1 space-y-0.5 text-xs text-yellow-800">
-                        {importResult.skipped_details.map((s, i) => <li key={i}>{s}</li>)}
-                      </ul>
-                    </details>
-                  )}
-                  {importResult.error_details.length > 0 && (
-                    <details className="mt-2">
-                      <summary className="cursor-pointer text-red-700">Errors ({importResult.errors})</summary>
-                      <ul className="mt-1 space-y-0.5 text-xs text-red-800">
-                        {importResult.error_details.map((e, i) => <li key={i}>{e}</li>)}
-                      </ul>
-                    </details>
-                  )}
+                )}
+                <div className="flex gap-3">
+                  <Button type="submit" disabled={uploading || !uploadFile}>
+                    {uploading ? <><Spinner className="mr-2 h-4 w-4" />Uploading…</> : <><Upload className="mr-2 h-4 w-4" />Upload</>}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={downloadTemplate}>
+                    <Download className="mr-2 h-4 w-4" /> Download Template
+                  </Button>
                 </div>
-              )}
+              </form>
             </CardContent>
           </Card>
-        </div>
+
+          {uploadResult && (
+            <Card>
+              <CardHeader>
+                <CardTitle>{uploadResult.errors === 0 ? "Upload Successful" : "Upload Complete with Errors"}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <p className="text-green-700">{uploadResult.inserted} slot(s) inserted across {uploadResult.divisions_updated} division(s).</p>
+                {uploadResult.errors > 0 && (
+                  <>
+                    <p className="text-red-600">{uploadResult.errors} row(s) had errors:</p>
+                    <ul className="space-y-1 text-sm text-red-500">
+                      {uploadResult.error_details.map((e, i) => <li key={i}>• {e}</li>)}
+                    </ul>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
     </div>
   );

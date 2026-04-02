@@ -44,7 +44,7 @@ export default function DeptAnalyticsPage() {
 
   // Load dept info
   useEffect(() => {
-    api.get("/admin/departments").then(({ data: depts }) => {
+    api.get<Dept[]>("/admin/departments").then(({ data: depts }) => {
       const found = depts.find((d: Dept) => String(d.id) === deptId);
       setDept(found ?? null);
     }).finally(() => setDeptLoading(false));
@@ -54,7 +54,7 @@ export default function DeptAnalyticsPage() {
   useEffect(() => {
     setLoading(true);
     api
-      .get("/admin/dept-year-analytics", { params: { dept_id: deptId, year: activeYear } })
+      .get<DivisionAnalytics[]>("/admin/dept-year-analytics", { params: { dept_id: deptId, year: activeYear } })
       .then(({ data }) => setData(data))
       .catch(() => setData([]))
       .finally(() => setLoading(false));

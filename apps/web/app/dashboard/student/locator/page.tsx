@@ -26,7 +26,7 @@ export default function StudentLocatorPage() {
 
   async function load() {
     try {
-      const { data } = await api.get("/timetable/teachers-now");
+      const { data } = await api.get<Teacher[]>("/timetable/teachers-now");
       setTeachers(data);
     } catch {
       // ignore

@@ -52,7 +52,7 @@ export default function SemesterSchedulePage() {
   function loadEvents() {
     setLoading(true);
     api
-      .get("/admin/semester-schedule", { params: { year: filterYear } })
+      .get<ScheduleEvent[]>("/admin/semester-schedule", { params: { year: filterYear } })
       .then(({ data }) => setEvents(data))
       .finally(() => setLoading(false));
   }
@@ -66,7 +66,7 @@ export default function SemesterSchedulePage() {
     try {
       const form = new FormData();
       form.append("file", csvFile);
-      const { data } = await api.post("/admin/semester-schedule/import", form, {
+      const { data } = await api.post<{ message: string; inserted: number; errors: number; error_details: string[] }>("/admin/semester-schedule/import", form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setImportResult(data);
@@ -93,12 +93,12 @@ export default function SemesterSchedulePage() {
     setEvents((prev) => prev.filter((e) => e.id !== id));
   }
 
-  function downloadSample() {
+  function downloadTemplate() {
     const blob = new Blob([SAMPLE_CSV], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "semester_schedule_sample.csv";
+    a.download = "semester_schedule_template.csv";
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -126,10 +126,10 @@ export default function SemesterSchedulePage() {
               <li><strong>dept_code</strong>: optional — leave blank for institute-wide events</li>
             </ul>
             <button
-              onClick={downloadSample}
+              onClick={downloadTemplate}
               className="rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-100"
             >
-              Download Sample CSV
+              Download Template CSV
             </button>
           </div>
 

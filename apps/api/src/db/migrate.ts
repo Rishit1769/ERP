@@ -35,8 +35,14 @@ async function runMigrations() {
       console.log(`[migrate] Running ${file}...`);
       const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
 
+      // Strip line comments (-- ...) before splitting to avoid semicolons inside comments
+      const stripped = sql
+        .split("\n")
+        .map((line) => (line.trimStart().startsWith("--") ? "" : line))
+        .join("\n");
+
       // Split on semicolons to run multiple statements
-      const statements = sql
+      const statements = stripped
         .split(";")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
@@ -44,7 +50,7 @@ async function runMigrations() {
       await conn.beginTransaction();
       try {
         for (const stmt of statements) {
-          await conn.execute(stmt);
+          await conn.query(stmt);
         }
         await conn.execute("INSERT INTO _migrations (filename) VALUES (?)", [file]);
         await conn.commit();

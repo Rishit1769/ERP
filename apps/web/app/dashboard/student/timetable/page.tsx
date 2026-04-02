@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import api from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
+import { TeacherInfoPopup } from "@/components/ui/teacher-info-popup";
 
 interface Slot {
   id: number;
@@ -16,6 +17,7 @@ interface Slot {
   type: string;
   batch_label: string | null;
   teacher_name: string;
+  teacher_erp_id: string;
 }
 
 interface ScheduleEvent {
@@ -66,7 +68,7 @@ function SlotCard({ slot }: { slot: Slot }) {
       </div>
       <div className="mt-1 flex flex-wrap gap-3 text-xs text-gray-500">
         <span>{slot.start_time}–{slot.end_time}</span>
-        <span>{slot.teacher_name}</span>
+        <TeacherInfoPopup erpId={slot.teacher_erp_id} name={slot.teacher_name} />
         <span>{slot.room}</span>
       </div>
     </div>
@@ -82,8 +84,8 @@ export default function StudentTimetablePage() {
   const fetchData = useCallback(() => {
     setLoading(true);
     Promise.all([
-      api.get("/timetable/my-today"),
-      api.get("/timetable/my-week"),
+      api.get<DaySchedule>("/timetable/my-today"),
+      api.get<DaySchedule[]>("/timetable/my-week"),
     ])
       .then(([t, w]) => {
         setTodayData(t.data);

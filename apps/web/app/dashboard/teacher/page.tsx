@@ -15,6 +15,7 @@ export default function TeacherOverview() {
     { label: "Enter Marks", href: "/dashboard/teacher/marks", icon: <FileText className="h-8 w-8 text-green-500" /> },
     { label: "Materials", href: "/dashboard/teacher/materials", icon: <BookOpen className="h-8 w-8 text-purple-500" /> },
     { label: "My Timetable", href: "/dashboard/teacher/timetable", icon: <Calendar className="h-8 w-8 text-orange-500" /> },
+    { label: "Portion Planner", href: "/dashboard/teacher/lesson-plan", icon: <FileText className="h-8 w-8 text-indigo-500" /> },
     ...(isTG
       ? [
           { label: "TG Students", href: "/dashboard/teacher/tg", icon: <Users className="h-8 w-8 text-teal-500" /> },

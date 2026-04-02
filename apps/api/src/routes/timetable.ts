@@ -620,4 +620,242 @@ router.get(
   }
 );
 
+// ─── GET /timetable/faculty-info/:erpId ──────────────────────────────────────
+// Any authenticated user can look up basic info about a faculty member
+router.get(
+  "/faculty-info/:erpId",
+  authenticate,
+  requireFullScope,
+  async (req: Request, res: Response) => {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT u.erp_id, u.name, u.email, u.phone,
+              d.name AS department, d.code AS dept_code,
+              GROUP_CONCAT(DISTINCT er.role_type ORDER BY er.role_type SEPARATOR ', ') AS roles
+       FROM users u
+       LEFT JOIN departments d ON u.dept_id = d.id
+       LEFT JOIN employee_roles er ON u.erp_id = er.erp_id
+       WHERE u.erp_id = ? AND u.base_role = 'EMPLOYEE' AND u.is_active = 1
+       GROUP BY u.erp_id`,
+      [req.params.erpId]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: "Faculty not found" });
+      return;
+    }
+    res.json(rows[0]);
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIMETABLE CSV UPLOAD (HOD / department-level)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /timetable/template ─────────────────────────────────────────────────
+// Download the timetable CSV template
+router.get(
+  "/template",
+  authenticate,
+  requireFullScope,
+  requireRole("HOD", "ADMIN"),
+  (_req: Request, res: Response) => {
+    const csv = [
+      "division_year,division_label,day,start_time,end_time,room,subject_code,teacher_erp_id,type,batch_label",
+      "2,A,MON,09:00,10:00,301,CS201,E1001,THEORY,",
+      "2,A,MON,10:00,11:00,Lab1,CS201L,E1002,PRACTICAL,Batch-A",
+      "2,B,TUE,09:00,10:00,302,IT201,E1003,THEORY,",
+    ].join("\n");
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="timetable_template.csv"');
+    res.send(csv);
+  }
+);
+
+// ─── POST /timetable/upload-csv ──────────────────────────────────────────────
+// HOD uploads a timetable CSV. Replaces ALL existing slots for each
+// division_year+division_label combo found in the CSV.
+// Required CSV columns:
+//   division_year, division_label, day, start_time, end_time, room,
+//   subject_code, teacher_erp_id, type, batch_label (optional)
+router.post(
+  "/upload-csv",
+  authenticate,
+  requireFullScope,
+  requireRole("HOD", "ADMIN"),
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    if (!req.file) {
+      res.status(400).json({ error: "No file uploaded" });
+      return;
+    }
+
+    const csvText = req.file.buffer.toString("utf-8");
+    const parsed = Papa.parse<Record<string, string>>(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => h.trim().toLowerCase().replace(/\s+/g, "_"),
+    });
+
+    if (parsed.errors.length > 0) {
+      res.status(400).json({ error: "CSV parse error", details: parsed.errors });
+      return;
+    }
+
+    const required = ["division_year", "division_label", "day", "start_time", "end_time", "room", "subject_code", "teacher_erp_id", "type"];
+    const headers = Object.keys(parsed.data[0] ?? {});
+    const missing = required.filter((h) => !headers.includes(h));
+    if (missing.length > 0) {
+      res.status(400).json({ error: "Missing CSV columns", missing });
+      return;
+    }
+
+    const VALID_DAYS = new Set(["MON", "TUE", "WED", "THU", "FRI", "SAT"]);
+    const VALID_TYPES = new Set(["THEORY", "PRACTICAL"]);
+    const TIME_RE = /^\d{2}:\d{2}$/;
+
+    const rowErrors: string[] = [];
+    let inserted = 0;
+
+    // Find HOD's dept scope
+    const hodDeptId = req.user.dept_id;
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // Track which divisions we've already cleared
+      const clearedDivisions = new Set<number>();
+
+      for (let i = 0; i < parsed.data.length; i++) {
+        const row = parsed.data[i];
+        const rowNum = i + 2;
+
+        const divYear   = parseInt(row.division_year ?? "");
+        const divLabel  = (row.division_label ?? "").trim().toUpperCase();
+        const day       = (row.day ?? "").trim().toUpperCase();
+        const startTime = (row.start_time ?? "").trim();
+        const endTime   = (row.end_time ?? "").trim();
+        const room      = (row.room ?? "").trim();
+        const subCode   = (row.subject_code ?? "").trim().toUpperCase();
+        const teacherErp = (row.teacher_erp_id ?? "").trim().toUpperCase();
+        const type      = (row.type ?? "THEORY").trim().toUpperCase();
+        const batchLabel = (row.batch_label ?? "").trim() || null;
+
+        if (isNaN(divYear) || divYear < 1 || divYear > 4) {
+          rowErrors.push(`Row ${rowNum}: division_year must be 1-4`); continue;
+        }
+        if (!divLabel) { rowErrors.push(`Row ${rowNum}: division_label is required`); continue; }
+        if (!VALID_DAYS.has(day)) { rowErrors.push(`Row ${rowNum}: day must be MON-SAT`); continue; }
+        if (!TIME_RE.test(startTime) || !TIME_RE.test(endTime)) {
+          rowErrors.push(`Row ${rowNum}: time must be HH:MM format`); continue;
+        }
+        if (startTime >= endTime) { rowErrors.push(`Row ${rowNum}: start_time must be before end_time`); continue; }
+        if (!room) { rowErrors.push(`Row ${rowNum}: room is required`); continue; }
+        if (!VALID_TYPES.has(type)) { rowErrors.push(`Row ${rowNum}: type must be THEORY or PRACTICAL`); continue; }
+
+        // Look up division (must belong to HOD's dept)
+        const [divRows] = await conn.execute<RowDataPacket[]>(
+          "SELECT id FROM divisions WHERE dept_id = ? AND year = ? AND label = ?",
+          [hodDeptId, divYear, divLabel]
+        );
+        if ((divRows as RowDataPacket[]).length === 0) {
+          rowErrors.push(`Row ${rowNum}: division Year${divYear}-${divLabel} not found in your department`); continue;
+        }
+        const divisionId: number = (divRows as RowDataPacket[])[0].id;
+
+        // Look up subject (dept-scoped)
+        const [subRows] = await conn.execute<RowDataPacket[]>(
+          "SELECT id FROM subjects WHERE code = ? AND dept_id = ?",
+          [subCode, hodDeptId]
+        );
+        if ((subRows as RowDataPacket[]).length === 0) {
+          rowErrors.push(`Row ${rowNum}: subject '${subCode}' not found in your department`); continue;
+        }
+        const subjectId: number = (subRows as RowDataPacket[])[0].id;
+
+        // Look up teacher (must exist and be in dept)
+        const [teacherRows] = await conn.execute<RowDataPacket[]>(
+          "SELECT erp_id FROM users WHERE erp_id = ? AND dept_id = ? AND base_role = 'EMPLOYEE' AND is_active = 1",
+          [teacherErp, hodDeptId]
+        );
+        if ((teacherRows as RowDataPacket[]).length === 0) {
+          rowErrors.push(`Row ${rowNum}: teacher '${teacherErp}' not found in your department`); continue;
+        }
+
+        // Ensure a subject_assignment exists (create if missing)
+        const [saRows] = await conn.execute<RowDataPacket[]>(
+          "SELECT id FROM subject_assignments WHERE teacher_erp_id = ? AND subject_id = ? AND division_id = ? AND type = ? AND COALESCE(batch_label,'') = COALESCE(?,'') ",
+          [teacherErp, subjectId, divisionId, type, batchLabel]
+        );
+        let assignmentId: number;
+        if ((saRows as RowDataPacket[]).length > 0) {
+          assignmentId = (saRows as RowDataPacket[])[0].id;
+        } else {
+          const [saIns] = await conn.execute<ResultSetHeader>(
+            "INSERT INTO subject_assignments (teacher_erp_id, subject_id, division_id, type, batch_label) VALUES (?, ?, ?, ?, ?)",
+            [teacherErp, subjectId, divisionId, type, batchLabel]
+          );
+          assignmentId = saIns.insertId;
+          // Ensure employee role
+          const roleType = type === "PRACTICAL" ? "PRACTICAL_TEACHER" : "SUBJECT_TEACHER";
+          await conn.execute(
+            "INSERT IGNORE INTO employee_roles (erp_id, role_type, dept_id) VALUES (?, ?, ?)",
+            [teacherErp, roleType, hodDeptId]
+          );
+        }
+
+        // Clear all existing timetable slots for this division (once per div per upload)
+        if (!clearedDivisions.has(divisionId)) {
+          await conn.execute(
+            `DELETE ts FROM timetable_slots ts
+             INNER JOIN subject_assignments sa ON ts.subject_assignment_id = sa.id
+             WHERE sa.division_id = ?`,
+            [divisionId]
+          );
+          clearedDivisions.add(divisionId);
+        }
+
+        // Insert timetable slot
+        await conn.execute(
+          "INSERT INTO timetable_slots (subject_assignment_id, day, start_time, end_time, room) VALUES (?, ?, ?, ?, ?)",
+          [assignmentId, day, startTime, endTime, room]
+        );
+        inserted++;
+      }
+
+      await conn.commit();
+      res.status(rowErrors.length > 0 && inserted === 0 ? 422 : 201).json({
+        message: `Imported ${inserted} timetable slot(s) across ${clearedDivisions.size} division(s)`,
+        inserted,
+        divisions_updated: clearedDivisions.size,
+        errors: rowErrors.length,
+        error_details: rowErrors,
+      });
+    } catch (err) {
+      await conn.rollback();
+      res.status(500).json({ error: (err as Error).message });
+    } finally {
+      conn.release();
+    }
+  }
+);
+
+// ─── DELETE /timetable/division/:divisionId ───────────────────────────────────
+// Clear all timetable slots for a division (allows full replacement)
+router.delete(
+  "/division/:divisionId",
+  authenticate,
+  requireFullScope,
+  requireRole("HOD", "ADMIN"),
+  async (req: Request, res: Response) => {
+    const [result] = await pool.execute<ResultSetHeader>(
+      `DELETE ts FROM timetable_slots ts
+       INNER JOIN subject_assignments sa ON ts.subject_assignment_id = sa.id
+       WHERE sa.division_id = ?`,
+      [req.params.divisionId]
+    );
+    res.json({ message: `Deleted ${result.affectedRows} slots` });
+  }
+);
+
 export default router;

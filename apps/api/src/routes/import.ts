@@ -79,15 +79,23 @@ router.post(
       const erpId = (result.success ? result.data.erp_id : raw.erp_id || "").toUpperCase();
       const deptCode = (result.success ? result.data.department : (raw.department || "")).toUpperCase().trim();
 
-      // Cross-reference: UID format vs role
+      // Cross-reference: erp_id prefix vs role
       if (result.success) {
         const isStudent = result.data.role === "student";
         if (isStudent) {
-          const parsed = parseStudentUid(erpId);
-          if (!parsed) {
-            rowErrors["erp_id"] = "Student UID must be: startYear-DeptDivRoll-endYear (e.g. 2025-COMPSA01-2029)";
-          } else if (parsed.deptCode !== deptCode) {
-            rowErrors["erp_id"] = `UID dept '${parsed.deptCode}' doesn't match CSV dept '${deptCode}'`;
+          if (!/^S[A-Z0-9]+$/i.test(erpId)) {
+            rowErrors["erp_id"] = "Student ERP ID must start with 'S' (e.g. S2001)";
+          }
+          // Validate uid field if provided
+          const uid = result.data.uid ?? "";
+          if (uid && uid !== "0" && !parseStudentUid(uid)) {
+            rowErrors["uid"] = "Student UID format: startYear-DeptDivRoll-endYear (e.g. 2025-COMPSA01-2029)";
+          }
+          if (uid && uid !== "0") {
+            const parsedUid = parseStudentUid(uid);
+            if (parsedUid && parsedUid.deptCode !== deptCode) {
+              rowErrors["uid"] = `UID dept '${parsedUid.deptCode}' doesn't match CSV dept '${deptCode}'`;
+            }
           }
         } else {
           if (!/^E[A-Z0-9]+$/.test(erpId)) {
@@ -183,9 +191,9 @@ router.post(
         const baseRole = csvRoleToBase[row.role];
 
         await conn.execute(
-          `INSERT INTO users (erp_id, name, email, phone, dept_id, base_role, password_hash, must_change_password)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-          [row.erp_id, row.name, row.email, row.phone, row._deptId, baseRole, defaultHash]
+          `INSERT INTO users (erp_id, uid, name, email, phone, dept_id, base_role, password_hash, must_change_password)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          [row.erp_id, row.uid ?? (baseRole === "EMPLOYEE" ? "0" : null), row.name, row.email, row.phone, row._deptId, baseRole, defaultHash]
         );
 
         // Insert employee role if applicable
@@ -197,18 +205,20 @@ router.post(
           );
         }
 
-        // Link student to an existing division (do NOT auto-create divisions)
+        // Link student to an existing division using the uid field (or erp_id if old format)
         if (baseRole === "STUDENT") {
-          const uid = parseStudentUid(row.erp_id);
+          // Use uid field if provided, else try erp_id (backward compat with old UID-as-erp_id)
+          const uidStr = row.uid && row.uid !== "0" ? row.uid : row.erp_id;
+          const uid = parseStudentUid(uidStr);
           if (uid) {
             const year = Math.min(
               Math.max(academicYearStart - uid.startYear + 1, 1),
               uid.endYear - uid.startYear
             );
-            const semester = year * 2 - 1;
+            const semester = row.semester && row.semester > 0 ? row.semester : year * 2 - 1;
             const [divRows] = await conn.execute<RowDataPacket[]>(
               "SELECT id FROM divisions WHERE dept_id = ? AND year = ? AND label = ?",
-              [row._deptId, year, uid.divisionLabel] as any
+              [row._deptId, row.year > 0 ? row.year : year, uid.divisionLabel] as any
             );
             if (divRows.length > 0) {
               await conn.execute(
@@ -235,7 +245,8 @@ router.post(
         student_mappings: validRows
           .filter((r) => r.role === "student")
           .map((r) => {
-            const uid = parseStudentUid(r.erp_id);
+            const uidStr = r.uid && r.uid !== "0" ? r.uid : r.erp_id;
+            const uid = parseStudentUid(uidStr);
             const derivedYear = uid
               ? Math.min(
                   Math.max(academicYearStart - uid.startYear + 1, 1),

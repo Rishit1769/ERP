@@ -5,6 +5,7 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
+import { TeacherInfoPopup } from "@/components/ui/teacher-info-popup";
 import toast from "react-hot-toast";
 
 interface SubjectAssignment {
@@ -383,7 +384,7 @@ export default function ManageAssignmentsPage() {
                         </>
                       ) : (
                         <>
-                          <td className="py-2 pr-4">{a.teacher_name}<br /><span className="text-xs text-gray-400">{a.teacher_erp_id}</span></td>
+                          <td className="py-2 pr-4"><TeacherInfoPopup erpId={a.teacher_erp_id} name={a.teacher_name} /><br /><span className="text-xs text-gray-400">{a.teacher_erp_id}</span></td>
                           <td className="py-2 pr-4">{a.subject_name}<br /><span className="text-xs text-gray-400">{a.subject_code}</span></td>
                           <td className="py-2 pr-4">Y{a.year} {a.division}</td>
                           <td className="py-2 pr-4">{a.type}</td>
@@ -423,7 +424,7 @@ export default function ManageAssignmentsPage() {
                   {classIncharges.map((ci) => (
                     <tr key={`${ci.year}-${ci.division}`} className="border-b last:border-0">
                       <td className="py-2 pr-4">Y{ci.year} {ci.division}</td>
-                      <td className="py-2 pr-4">{ci.teacher_name} ({ci.teacher_erp_id})</td>
+                      <td className="py-2 pr-4"><TeacherInfoPopup erpId={ci.teacher_erp_id} name={ci.teacher_name} /> ({ci.teacher_erp_id})</td>
                       <td className="py-2">
                         <select
                           defaultValue=""

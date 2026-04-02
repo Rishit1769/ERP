@@ -82,11 +82,12 @@ router.post(
     }
 
     try {
-      await pool.execute(
+      const [saResult] = await pool.execute<ResultSetHeader>(
         `INSERT INTO subject_assignments (teacher_erp_id, subject_id, division_id, type, batch_label)
          VALUES (?, ?, ?, ?, ?)`,
         [teacher_erp_id, subject_id, division_id, type, batch_label || null]
       );
+      const assignmentId = saResult.insertId;
 
       // Ensure the appropriate employee_role exists
       const roleType = type === "PRACTICAL" ? "PRACTICAL_TEACHER" : "SUBJECT_TEACHER";
@@ -95,7 +96,55 @@ router.post(
         [teacher_erp_id, roleType, req.user.dept_id]
       );
 
-      res.status(201).json({ message: "Subject assignment created" });
+      // ── Auto-create lesson plan if a master syllabus exists ──────────────
+      const [syllabusRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT sm.id FROM syllabus_master sm
+         WHERE sm.subject_id = ? AND sm.type = ?
+         ORDER BY sm.updated_at DESC LIMIT 1`,
+        [subject_id, type]
+      );
+
+      if (syllabusRows.length > 0) {
+        const syllabusId = (syllabusRows[0] as RowDataPacket).id;
+
+        // Create lesson plan record
+        const [lpResult] = await pool.execute<ResultSetHeader>(
+          "INSERT INTO teacher_lesson_plans (assignment_id, syllabus_id) VALUES (?, ?)",
+          [assignmentId, syllabusId]
+        );
+        const lessonPlanId = lpResult.insertId;
+
+        // Copy all topics from master syllabus into lesson_plan_topics
+        const [units] = await pool.execute<RowDataPacket[]>(
+          "SELECT id, unit_name FROM syllabus_units WHERE syllabus_id = ? ORDER BY order_no",
+          [syllabusId]
+        );
+
+        let globalOrder = 1;
+        for (const unit of units as RowDataPacket[]) {
+          const [topics] = await pool.execute<RowDataPacket[]>(
+            "SELECT * FROM syllabus_topics WHERE unit_id = ? ORDER BY order_no",
+            [unit.id]
+          );
+          for (const topic of topics as RowDataPacket[]) {
+            await pool.execute(
+              `INSERT INTO lesson_plan_topics
+                 (lesson_plan_id, syllabus_topic_id, unit_name, topic_name, topic_description,
+                  num_lectures, weightage, order_no, status, is_additional)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0)`,
+              [
+                lessonPlanId, topic.id, unit.unit_name, topic.topic_name,
+                topic.topic_description, topic.num_lectures, topic.weightage, globalOrder++,
+              ]
+            );
+          }
+        }
+      }
+
+      res.status(201).json({
+        message: "Subject assignment created",
+        lesson_plan_created: syllabusRows.length > 0,
+      });
     } catch (err: any) {
       if (err.code === "ER_DUP_ENTRY") {
         res.status(409).json({ error: "This assignment already exists" });
@@ -112,6 +161,16 @@ router.post(
   validate(AssignClassInchargeSchema),
   async (req: Request, res: Response) => {
     const { teacher_erp_id, division_id } = req.body as AssignClassInchargeSchema;
+
+    // Enforce max 2 class incharges per division
+    const [existing] = await pool.execute<RowDataPacket[]>(
+      "SELECT COUNT(*) AS cnt FROM class_incharge WHERE division_id = ?",
+      [division_id]
+    );
+    if ((existing[0] as RowDataPacket).cnt >= 2) {
+      res.status(409).json({ error: "A division can have at most 2 class incharges" });
+      return;
+    }
 
     try {
       await pool.execute(
@@ -610,5 +669,50 @@ router.post(
     }
   }
 );
+
+// ─── GET /roles/students/:divisionId ─────────────────────────────────────────
+// Returns students in a division not yet assigned to any TG group
+router.get("/students/:divisionId", async (req: Request, res: Response) => {
+  const divisionId = Number(req.params.divisionId);
+  const [div] = await pool.execute<RowDataPacket[]>(
+    "SELECT id FROM divisions WHERE id = ? AND dept_id = ?",
+    [divisionId, req.user.dept_id]
+  );
+  if (div.length === 0) {
+    res.status(404).json({ error: "Division not found in your department" });
+    return;
+  }
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT u.erp_id, u.name, sd.roll_no
+     FROM student_details sd
+     INNER JOIN users u ON sd.erp_id = u.erp_id
+     LEFT JOIN tg_students ts ON sd.erp_id = ts.student_erp_id
+     WHERE sd.division_id = ? AND ts.student_erp_id IS NULL AND u.is_active = 1
+     ORDER BY sd.roll_no`,
+    [divisionId]
+  );
+  res.json(rows);
+});
+
+// ─── GET /roles/teacher-info/:erpId ──────────────────────────────────────────
+// Any authenticated user can look up basic info about a teacher
+router.get("/teacher-info/:erpId", async (req: Request, res: Response) => {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT u.erp_id, u.name, u.email, u.phone,
+            d.name AS department, d.code AS dept_code,
+            GROUP_CONCAT(DISTINCT er.role_type ORDER BY er.role_type SEPARATOR ', ') AS roles
+     FROM users u
+     LEFT JOIN departments d ON u.dept_id = d.id
+     LEFT JOIN employee_roles er ON u.erp_id = er.erp_id
+     WHERE u.erp_id = ? AND u.base_role = 'EMPLOYEE' AND u.is_active = 1
+     GROUP BY u.erp_id`,
+    [req.params.erpId]
+  );
+  if (rows.length === 0) {
+    res.status(404).json({ error: "Teacher not found" });
+    return;
+  }
+  res.json(rows[0]);
+});
 
 export default router;

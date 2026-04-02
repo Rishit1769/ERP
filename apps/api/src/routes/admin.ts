@@ -209,6 +209,33 @@ router.get(
   }
 );
 
+// ─── GET /admin/subjects ──────────────────────────────────────────────────────
+router.get(
+  "/subjects",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  async (req: Request, res: Response) => {
+    const { dept_id } = req.query as { dept_id?: string };
+    const params: (string | number)[] = [];
+    let where = "1=1";
+    if (dept_id) {
+      where += " AND s.dept_id = ?";
+      params.push(parseInt(dept_id));
+    }
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT s.id, s.code, s.name, s.dept_id, s.has_practical, s.credits,
+              d.code AS dept_code, d.name AS dept_name
+       FROM subjects s
+       JOIN departments d ON s.dept_id = d.id
+       WHERE ${where}
+       ORDER BY d.code, s.name`,
+      params
+    );
+    res.json(rows);
+  }
+);
+
 // ─── POST /admin/subjects ─────────────────────────────────────────────────────
 router.post(
   "/subjects",
@@ -684,6 +711,437 @@ router.delete(
   async (req: Request, res: Response) => {
     await pool.execute("DELETE FROM semester_schedule WHERE id = ?", [req.params.id]);
     res.json({ message: "Event deleted" });
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SYLLABUS MANAGEMENT (Admin only)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /admin/syllabus/upload ──────────────────────────────────────────────
+// Upload a CSV syllabus for a subject. CSV columns (required):
+//   unit_name, topic_name, topic_description, num_lectures, weightage
+// Body fields (multipart): subject_id, type (THEORY|PRACTICAL), semester,
+//   total_lecture_hours
+router.post(
+  "/syllabus/upload",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    if (!req.file) {
+      res.status(400).json({ error: "No file uploaded" });
+      return;
+    }
+
+    const subject_id = parseInt(req.body.subject_id);
+    const type = (req.body.type || "THEORY").toUpperCase();
+    const semester = parseInt(req.body.semester);
+    const total_lecture_hours = parseInt(req.body.total_lecture_hours || "0");
+
+    if (!subject_id || isNaN(subject_id)) {
+      res.status(400).json({ error: "subject_id is required" });
+      return;
+    }
+    if (!["THEORY", "PRACTICAL"].includes(type)) {
+      res.status(400).json({ error: "type must be THEORY or PRACTICAL" });
+      return;
+    }
+    if (!semester || semester < 1 || semester > 8) {
+      res.status(400).json({ error: "semester must be 1–8" });
+      return;
+    }
+
+    const csvText = req.file.buffer.toString("utf-8");
+    const parsed = Papa.parse<Record<string, string>>(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => h.trim().toLowerCase().replace(/\s+/g, "_"),
+    });
+
+    if (parsed.errors.length > 0) {
+      res.status(400).json({ error: "CSV parse error", details: parsed.errors });
+      return;
+    }
+
+    const required = ["unit_name", "topic_name", "num_lectures", "weightage"];
+    const headers = Object.keys(parsed.data[0] ?? {});
+    const missing = required.filter((h) => !headers.includes(h));
+    if (missing.length > 0) {
+      res.status(400).json({ error: "Missing CSV columns", missing });
+      return;
+    }
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // Upsert syllabus_master (replace if already exists for subject+type+semester)
+      const [existing] = await conn.execute<RowDataPacket[]>(
+        "SELECT id FROM syllabus_master WHERE subject_id = ? AND type = ? AND semester = ?",
+        [subject_id, type, semester]
+      );
+
+      let syllabusId: number;
+      if (existing.length > 0) {
+        syllabusId = (existing[0] as RowDataPacket).id;
+        // Delete old units (cascades to topics)
+        await conn.execute("DELETE FROM syllabus_units WHERE syllabus_id = ?", [syllabusId]);
+        await conn.execute(
+          "UPDATE syllabus_master SET total_lecture_hours = ?, uploaded_by_erp = ?, updated_at = NOW() WHERE id = ?",
+          [total_lecture_hours, req.user.erp_id, syllabusId]
+        );
+      } else {
+        const [ins] = await conn.execute<ResultSetHeader>(
+          "INSERT INTO syllabus_master (subject_id, type, semester, total_lecture_hours, uploaded_by_erp) VALUES (?, ?, ?, ?, ?)",
+          [subject_id, type, semester, total_lecture_hours, req.user.erp_id]
+        );
+        syllabusId = ins.insertId;
+      }
+
+      // Group rows by unit, preserving order
+      const unitMap = new Map<string, Array<Record<string, string>>>();
+      for (const row of parsed.data) {
+        const unitName = (row.unit_name ?? "").trim();
+        if (!unitName) continue;
+        if (!unitMap.has(unitName)) unitMap.set(unitName, []);
+        unitMap.get(unitName)!.push(row);
+      }
+
+      let unitOrder = 1;
+      let topicsInserted = 0;
+      const rowErrors: string[] = [];
+
+      for (const [unitName, rows] of unitMap) {
+        const [unitIns] = await conn.execute<ResultSetHeader>(
+          "INSERT INTO syllabus_units (syllabus_id, unit_name, order_no) VALUES (?, ?, ?)",
+          [syllabusId, unitName, unitOrder++]
+        );
+        const unitId = unitIns.insertId;
+
+        let topicOrder = 1;
+        for (const row of rows) {
+          const topicName = (row.topic_name ?? "").trim();
+          if (!topicName) continue;
+          const numLec = parseInt(row.num_lectures ?? "1");
+          const wt = parseFloat(row.weightage ?? "0");
+          if (isNaN(numLec) || numLec < 1) {
+            rowErrors.push(`Unit "${unitName}", topic "${topicName}": invalid num_lectures`);
+            continue;
+          }
+          await conn.execute(
+            `INSERT INTO syllabus_topics (unit_id, topic_name, topic_description, num_lectures, weightage, order_no)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [unitId, topicName, (row.topic_description ?? "").trim() || null, numLec, isNaN(wt) ? 0 : wt, topicOrder++]
+          );
+          topicsInserted++;
+        }
+      }
+
+      await conn.commit();
+
+      res.status(201).json({
+        message: `Syllabus saved (${topicsInserted} topics across ${unitMap.size} units)`,
+        syllabus_id: syllabusId,
+        units: unitMap.size,
+        topics: topicsInserted,
+        row_errors: rowErrors,
+      });
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+);
+
+// ─── GET /admin/syllabus ──────────────────────────────────────────────────────
+// List all master syllabi (optionally filter by dept_id)
+router.get(
+  "/syllabus",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  async (req: Request, res: Response) => {
+    const { dept_id } = req.query as { dept_id?: string };
+    const params: (string | number)[] = [];
+    let where = "1=1";
+    if (dept_id) {
+      where += " AND s.dept_id = ?";
+      params.push(parseInt(dept_id));
+    }
+
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT sm.id, sm.subject_id, sub.code AS subject_code, sub.name AS subject_name,
+              sm.type, sm.semester, sm.total_lecture_hours,
+              sm.uploaded_by_erp, u.name AS uploaded_by_name,
+              sm.updated_at,
+              (SELECT COUNT(*) FROM syllabus_units su WHERE su.syllabus_id = sm.id) AS unit_count,
+              (SELECT COUNT(*) FROM syllabus_topics st
+               JOIN syllabus_units su ON st.unit_id = su.id
+               WHERE su.syllabus_id = sm.id) AS topic_count
+       FROM syllabus_master sm
+       JOIN subjects sub ON sm.subject_id = sub.id
+       LEFT JOIN users u ON sm.uploaded_by_erp = u.erp_id
+       WHERE ${where}
+       ORDER BY sub.name, sm.type, sm.semester`,
+      params
+    );
+    res.json(rows);
+  }
+);
+
+// ─── GET /admin/syllabus/:id ──────────────────────────────────────────────────
+// Get a single master syllabus with full unit/topic detail
+router.get(
+  "/syllabus/:id",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  async (req: Request, res: Response) => {
+    const [sm] = await pool.execute<RowDataPacket[]>(
+      `SELECT sm.*, sub.name AS subject_name, sub.code AS subject_code
+       FROM syllabus_master sm
+       JOIN subjects sub ON sm.subject_id = sub.id
+       WHERE sm.id = ?`,
+      [req.params.id]
+    );
+    if ((sm as RowDataPacket[]).length === 0) {
+      res.status(404).json({ error: "Syllabus not found" });
+      return;
+    }
+
+    const [units] = await pool.execute<RowDataPacket[]>(
+      "SELECT * FROM syllabus_units WHERE syllabus_id = ? ORDER BY order_no",
+      [req.params.id]
+    );
+
+    const unitsWithTopics = await Promise.all(
+      (units as RowDataPacket[]).map(async (unit) => {
+        const [topics] = await pool.execute<RowDataPacket[]>(
+          "SELECT * FROM syllabus_topics WHERE unit_id = ? ORDER BY order_no",
+          [unit.id]
+        );
+        return { ...unit, topics };
+      })
+    );
+
+    res.json({ ...(sm as RowDataPacket[])[0], units: unitsWithTopics });
+  }
+);
+
+// ─── DELETE /admin/syllabus/:id ───────────────────────────────────────────────
+router.delete(
+  "/syllabus/:id",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  async (req: Request, res: Response) => {
+    await pool.execute("DELETE FROM syllabus_master WHERE id = ?", [req.params.id]);
+    res.json({ message: "Syllabus deleted" });
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUBJECT CSV IMPORT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /admin/subjects/template ────────────────────────────────────────────
+// Download the subject import CSV template
+router.get(
+  "/subjects/template",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  (_req: Request, res: Response) => {
+    const csv = [
+      "paper_code,department,subject_code,subject_name,weekly_hours,credits,has_practical",
+      "CS101,COMPS,CS101,Data Structures,4,4,0",
+      "CS102,COMPS,CS102L,Data Structures Lab,2,1,1",
+      "IT201,IT,IT201,Computer Networks,3,3,0",
+    ].join("\n");
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="subjects_template.csv"');
+    res.send(csv);
+  }
+);
+
+// ─── POST /admin/subjects/import-csv ─────────────────────────────────────────
+// Bulk-import subjects from CSV.
+// CSV columns: paper_code, department, subject_code, subject_name, weekly_hours, credits, has_practical
+router.post(
+  "/subjects/import-csv",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    if (!req.file) {
+      res.status(400).json({ error: "No file uploaded" });
+      return;
+    }
+
+    const csvText = req.file.buffer.toString("utf-8");
+    const parsed = Papa.parse<Record<string, string>>(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => h.trim().toLowerCase().replace(/\s+/g, "_"),
+    });
+
+    if (parsed.errors.length > 0) {
+      res.status(400).json({ error: "CSV parse error", details: parsed.errors });
+      return;
+    }
+
+    const required = ["department", "subject_code", "subject_name", "weekly_hours", "credits"];
+    const headers = Object.keys(parsed.data[0] ?? {});
+    const missing = required.filter((h) => !headers.includes(h));
+    if (missing.length > 0) {
+      res.status(400).json({ error: "Missing CSV columns", missing });
+      return;
+    }
+
+    // Load departments
+    const [deptRows] = await pool.execute<RowDataPacket[]>("SELECT id, code FROM departments");
+    const deptMap = new Map<string, number>(deptRows.map((d) => [String(d.code).toUpperCase(), d.id as number]));
+
+    const rowErrors: string[] = [];
+    let inserted = 0;
+    let skipped = 0;
+
+    for (let i = 0; i < parsed.data.length; i++) {
+      const row = parsed.data[i];
+      const rowNum = i + 2;
+
+      const dept       = (row.department ?? "").trim().toUpperCase();
+      const code       = (row.subject_code ?? "").trim().toUpperCase();
+      const name       = (row.subject_name ?? "").trim();
+      const paperCode  = (row.paper_code ?? "").trim().toUpperCase() || null;
+      const hours      = parseInt(row.weekly_hours ?? "3");
+      const credits    = parseInt(row.credits ?? "3");
+      const hasPrac    = ["1", "yes", "true"].includes((row.has_practical ?? "0").toLowerCase()) ? 1 : 0;
+
+      if (!dept || !deptMap.has(dept)) {
+        rowErrors.push(`Row ${rowNum}: department '${dept}' not found`);
+        continue;
+      }
+      if (!code) { rowErrors.push(`Row ${rowNum}: subject_code is required`); continue; }
+      if (!name) { rowErrors.push(`Row ${rowNum}: subject_name is required`); continue; }
+      if (isNaN(hours) || hours < 1) { rowErrors.push(`Row ${rowNum}: weekly_hours must be ≥ 1`); continue; }
+      if (isNaN(credits) || credits < 1) { rowErrors.push(`Row ${rowNum}: credits must be ≥ 1`); continue; }
+
+      try {
+        await pool.execute(
+          `INSERT INTO subjects (code, paper_code, name, dept_id, has_practical, credits, weekly_hours)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [code, paperCode, name, deptMap.get(dept)!, hasPrac, credits, hours]
+        );
+        inserted++;
+      } catch (err: any) {
+        if (err.code === "ER_DUP_ENTRY") {
+          skipped++;
+        } else {
+          rowErrors.push(`Row ${rowNum}: ${err.message}`);
+        }
+      }
+    }
+
+    res.status(rowErrors.length > 0 && inserted === 0 ? 422 : 201).json({
+      message: `Imported ${inserted} subject(s)`,
+      inserted,
+      skipped,
+      errors: rowErrors.length,
+      error_details: rowErrors,
+    });
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SEMESTER DATES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /admin/semester-dates ────────────────────────────────────────────────
+router.get(
+  "/semester-dates",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  async (_req: Request, res: Response) => {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      "SELECT id, sem_type, semester, start_date, end_date, updated_at FROM semester_dates ORDER BY sem_type, semester"
+    );
+    res.json(rows);
+  }
+);
+
+// ─── PUT /admin/semester-dates ────────────────────────────────────────────────
+// Upsert start/end dates for a semester.
+// Body: { sem_type: "ODD"|"EVEN", semesters: [{ semester, start_date, end_date }] }
+router.put(
+  "/semester-dates",
+  authenticate,
+  requireFullScope,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  async (req: Request, res: Response) => {
+    const { sem_type, semesters } = req.body as {
+      sem_type: "ODD" | "EVEN";
+      semesters: Array<{ semester: number; start_date: string; end_date: string }>;
+    };
+
+    if (!["ODD", "EVEN"].includes(sem_type)) {
+      res.status(400).json({ error: "sem_type must be ODD or EVEN" });
+      return;
+    }
+    if (!Array.isArray(semesters) || semesters.length === 0) {
+      res.status(400).json({ error: "semesters array is required" });
+      return;
+    }
+
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    const oddSems = [1, 3, 5, 7];
+    const evenSems = [2, 4, 6, 8];
+    const allowed = sem_type === "ODD" ? oddSems : evenSems;
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (const s of semesters) {
+        if (!allowed.includes(s.semester)) {
+          res.status(400).json({ error: `Semester ${s.semester} is not a ${sem_type} semester (${allowed.join(",")})` });
+          await conn.rollback();
+          conn.release();
+          return;
+        }
+        if (!dateRe.test(s.start_date) || !dateRe.test(s.end_date)) {
+          res.status(400).json({ error: `Invalid date format for semester ${s.semester}` });
+          await conn.rollback();
+          conn.release();
+          return;
+        }
+        if (s.start_date >= s.end_date) {
+          res.status(400).json({ error: `start_date must be before end_date for semester ${s.semester}` });
+          await conn.rollback();
+          conn.release();
+          return;
+        }
+        await conn.execute(
+          `INSERT INTO semester_dates (sem_type, semester, start_date, end_date, created_by)
+           VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE start_date = VALUES(start_date), end_date = VALUES(end_date), created_by = VALUES(created_by)`,
+          [sem_type, s.semester, s.start_date, s.end_date, req.user.erp_id]
+        );
+      }
+      await conn.commit();
+      res.json({ message: `${semesters.length} semester date(s) saved` });
+    } catch (err) {
+      await conn.rollback();
+      res.status(500).json({ error: (err as Error).message });
+    } finally {
+      conn.release();
+    }
   }
 );
 
