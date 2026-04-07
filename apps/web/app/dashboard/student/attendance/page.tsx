@@ -25,7 +25,7 @@ export default function StudentAttendancePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.get("/attendance/student-summary").then(({ data }) => setSummary(data)).finally(() => setLoading(false));
+    api.get("/attendance/student-summary").then(({ data }) => setSummary(data)).catch(() => setSummary([])).finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {

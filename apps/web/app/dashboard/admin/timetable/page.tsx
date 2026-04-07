@@ -57,7 +57,7 @@ export default function AdminTimetablePage() {
     api.get<{ id: number; year: number; label: string; dept_code: string }[]>("/admin/divisions").then(({ data }) => {
       setDivisions(data);
       setDivsLoading(false);
-    });
+    }).catch(() => setDivsLoading(false));
   }, []);
 
   useEffect(() => {
@@ -66,6 +66,7 @@ export default function AdminTimetablePage() {
     api
       .get<TimetableSlot[]>(`/timetable/division/${selectedDiv}`)
       .then(({ data }) => setSlots(data))
+      .catch(() => setSlots([]))
       .finally(() => setViewLoading(false));
   }, [selectedDiv]);
 
@@ -81,7 +82,7 @@ export default function AdminTimetablePage() {
       });
       setImportResult(data);
       if (selectedDiv) {
-        api.get<TimetableSlot[]>(`/timetable/division/${selectedDiv}`).then(({ data }) => setSlots(data));
+        api.get<TimetableSlot[]>(`/timetable/division/${selectedDiv}`).then(({ data }) => setSlots(data)).catch(() => {});
       }
     } catch (err: any) {
       setImportResult(

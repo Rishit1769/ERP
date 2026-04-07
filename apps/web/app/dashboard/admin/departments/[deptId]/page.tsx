@@ -47,7 +47,7 @@ export default function DeptAnalyticsPage() {
     api.get<Dept[]>("/admin/departments").then(({ data: depts }) => {
       const found = depts.find((d: Dept) => String(d.id) === deptId);
       setDept(found ?? null);
-    }).finally(() => setDeptLoading(false));
+    }).catch(() => setDept(null)).finally(() => setDeptLoading(false));
   }, [deptId]);
 
   // Load analytics whenever year changes

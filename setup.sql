@@ -464,6 +464,17 @@ VALUES
 
 INSERT IGNORE INTO _migrations (filename) VALUES ('009_seed_accounts.sql');
 
+-- Mark migrations 010-018 as already applied (schema already reflects their changes above)
+INSERT IGNORE INTO _migrations (filename) VALUES ('010_fix_tg_students.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('011_semester_alumni.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('012_thresholds_multi_incharge.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('013_semester_schedule.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('014_practical_experiments.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('015_syllabus_lesson_plan.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('016_class_incharge_multi_achievements_notifications.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('017_subject_hours_semester_dates_uid.sql');
+INSERT IGNORE INTO _migrations (filename) VALUES ('018_fix_out_of_range_semesters.sql');
+
 -- ============================================================================
 -- Done! All 23 tables created + seed data loaded.
 -- ============================================================================

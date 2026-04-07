@@ -100,7 +100,7 @@ export default function AdminSyllabusPage() {
     setListLoading(true);
     api.get<SyllabusMaster[]>("/admin/syllabus").then(({ data }) => {
       setSyllabi(data);
-    }).finally(() => setListLoading(false));
+    }).catch(() => {}).finally(() => setListLoading(false));
   }
 
   async function toggleDetail(id: number) {

@@ -53,7 +53,7 @@ export default function HodTimetablePage() {
     api.get<{ id: number; year: number; label: string }[]>("/roles/divisions").then(({ data }) => {
       setDivisions(data);
       setDivsLoading(false);
-    });
+    }).catch(() => setDivsLoading(false));
   }, []);
 
   function loadSlots(divId: string) {
