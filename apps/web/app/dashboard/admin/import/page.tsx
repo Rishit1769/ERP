@@ -86,14 +86,17 @@ export default function ImportPage() {
         : `Successfully imported ${data.imported} users`;
       toast.success(msg);
     } catch (err: unknown) {
-      const axiosErr = err as { response?: { status?: number; data?: { error?: string; rows?: ValidationRow[]; error_count?: number } } };
+      const axiosErr = err as { response?: { status?: number; data?: { error?: string; message?: string; rows?: ValidationRow[]; error_count?: number } } };
       if (axiosErr.response?.status === 422 && axiosErr.response.data?.rows) {
         const rows = axiosErr.response.data.rows;
         const errorRows = rows.filter((r: ValidationRow) => r._errors);
         setUserResult({ imported: 0, students: 0, employees: 0, validationErrors: errorRows });
         toast.error(`${axiosErr.response.data.error_count} validation errors found`);
+      } else if (axiosErr.response?.status === 422) {
+        toast.error(axiosErr.response.data?.error || "Validation failed", { duration: 8000 });
       } else {
-        toast.error(axiosErr.response?.data?.error || "Import failed");
+        const errMsg = axiosErr.response?.data?.message || axiosErr.response?.data?.error || "Import failed";
+        toast.error(errMsg, { duration: 8000 });
       }
     } finally {
       setUserLoading(false);

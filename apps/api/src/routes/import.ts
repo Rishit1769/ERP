@@ -141,6 +141,24 @@ router.post(
       }
     }
 
+    // Check for duplicate emails — these would cause a DB constraint violation
+    if (validRows.length > 0) {
+      const allEmails = validRows.map((r) => r.email);
+      const emailPlaceholders = allEmails.map(() => "?").join(",");
+      const [emailConflictRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT email, erp_id FROM users WHERE email IN (${emailPlaceholders})`,
+        allEmails
+      );
+      if ((emailConflictRows as RowDataPacket[]).length > 0) {
+        const conflicts = (emailConflictRows as Array<{ email: string; erp_id: string }>)
+          .map((r) => `${r.email} (existing user: ${r.erp_id})`);
+        res.status(422).json({
+          error: `Email conflict: the following email(s) already exist — ${conflicts.join("; ")}`,
+        });
+        return;
+      }
+    }
+
     // If there are validation errors (not just duplicates), reject the whole upload
     if (errors.length > 0) {
       const allRows = parsed.data.map((raw, i) => {

@@ -23,6 +23,8 @@ import resultsRouter from "./routes/results";
 import lessonPlanRouter from "./routes/lessonPlan";
 import achievementsRouter from "./routes/achievements";
 import notificationsRouter from "./routes/notifications";
+import noticesRouter from "./routes/notices";
+import notesRouter from "./routes/notes";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -59,6 +61,8 @@ app.use("/results", resultsRouter);
 app.use("/lesson-plan", lessonPlanRouter);
 app.use("/achievements", achievementsRouter);
 app.use("/notifications", notificationsRouter);
+app.use("/notices", noticesRouter);
+app.use("/notes", notesRouter);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {

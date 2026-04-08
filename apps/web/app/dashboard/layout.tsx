@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -25,10 +25,10 @@ import {
   Trophy,
   ChevronDown,
   Briefcase,
+  Megaphone,
 } from "lucide-react";
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import { PageLoader } from "@/components/ui/spinner";
-import { ThemeToggle } from "@/components/ui/theme-toggle";
 import api from "@/lib/api";
 
 interface NavItem {
@@ -55,6 +55,7 @@ function getTeacherNavGroups(roles: string[]): NavGroup[] {
         { label: "Attendance", href: `${base}/attendance`, icon: <ClipboardList className="h-4 w-4" /> },
         { label: "Marks", href: `${base}/marks`, icon: <FileText className="h-4 w-4" /> },
         { label: "Materials", href: `${base}/materials`, icon: <BookOpen className="h-4 w-4" /> },
+        { label: "Notes", href: `${base}/notes`, icon: <FileText className="h-4 w-4" /> },
         { label: "Timetable", href: `${base}/timetable`, icon: <Calendar className="h-4 w-4" /> },
         { label: "Portion Planner", href: `${base}/lesson-plan`, icon: <FileText className="h-4 w-4" /> },
       ],
@@ -67,6 +68,7 @@ function getTeacherNavGroups(roles: string[]): NavGroup[] {
       groupIcon: <Users className="h-5 w-5" />,
       items: [
         { label: "Attendance", href: `${base}/attendance`, icon: <ClipboardList className="h-4 w-4" /> },
+        { label: "Notes", href: `${base}/notes`, icon: <FileText className="h-4 w-4" /> },
         { label: "Timetable", href: `${base}/timetable`, icon: <Calendar className="h-4 w-4" /> },
       ],
     });
@@ -79,6 +81,7 @@ function getTeacherNavGroups(roles: string[]): NavGroup[] {
       items: [
         { label: "TG Students", href: `${base}/tg`, icon: <Users className="h-4 w-4" /> },
         { label: "Grievances", href: `${base}/grievances`, icon: <MessageCircle className="h-4 w-4" /> },
+        { label: "Notes", href: `${base}/notes`, icon: <FileText className="h-4 w-4" /> },
         { label: "Mentorship", href: `${base}/mentorship`, icon: <GraduationCap className="h-4 w-4" /> },
         { label: "AICTE Review", href: `${base}/aicte`, icon: <Award className="h-4 w-4" /> },
       ],
@@ -111,6 +114,7 @@ function getNavItems(baseRole: string, roles: string[]): NavItem[] {
       { label: "Schedule", href: `${base}/admin/semester-schedule`, icon: <Calendar className="h-5 w-5" /> },
       { label: "Timetable", href: `${base}/admin/timetable`, icon: <ClipboardList className="h-5 w-5" /> },
       { label: "Syllabus", href: `${base}/admin/syllabus`, icon: <BookOpen className="h-5 w-5" /> },
+      { label: "Notices", href: `${base}/admin/notices`, icon: <Megaphone className="h-5 w-5" /> },
     ];
   }
 
@@ -122,6 +126,8 @@ function getNavItems(baseRole: string, roles: string[]): NavItem[] {
       { label: "Attendance", href: `${base}/hod/attendance`, icon: <ClipboardList className="h-5 w-5" /> },
       { label: "At-Risk Students", href: `${base}/hod/risk`, icon: <AlertTriangle className="h-5 w-5" /> },
       { label: "Faculty Locator", href: `${base}/hod/locator`, icon: <MapPin className="h-5 w-5" /> },
+      { label: "Notices", href: `${base}/hod/notices`, icon: <Megaphone className="h-5 w-5" /> },
+      { label: "Notes", href: `${base}/hod/notes`, icon: <BookOpen className="h-5 w-5" /> },
     ];
   }
 
@@ -229,8 +235,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const teacherTopItems: NavItem[] = isTeacher
     ? [
         { label: "Overview", href: "/dashboard/teacher", icon: <LayoutDashboard className="h-5 w-5" /> },
-        { label: "Achievements", href: "/dashboard/teacher/achievements", icon: <Trophy className="h-5 w-5" /> },
-      ]
+        { label: "Achievements", href: "/dashboard/teacher/achievements", icon: <Trophy className="h-5 w-5" /> },        { label: "Notices", href: "/dashboard/teacher/notices", icon: <Megaphone className="h-5 w-5" /> },      ]
     : [];
 
   // Resolve the active page title for the header
@@ -241,7 +246,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     "Dashboard";
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
+    <div className="flex h-screen overflow-hidden bg-gray-50">
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
@@ -253,11 +258,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 transition-transform lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-white border-r border-gray-200 transition-transform lg:static lg:translate-x-0",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        <div className="flex h-16 items-center justify-between border-b dark:border-gray-700 px-4">
+        <div className="flex h-16 items-center justify-between border-b px-4">
           <span className="text-xl font-bold text-primary">CloudCampus</span>
           <button onClick={() => setSidebarOpen(false)} className="lg:hidden">
             <X className="h-5 w-5" />
@@ -275,7 +280,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                 pathname === item.href
                   ? "bg-primary/10 text-primary"
-                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100"
+                  : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
               )}
             >
               {item.icon}
@@ -293,7 +298,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                 pathname === item.href
                   ? "bg-primary/10 text-primary"
-                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100"
+                  : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
               )}
             >
               {item.icon}
@@ -313,7 +318,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                     groupActive
                       ? "bg-primary/10 text-primary"
-                      : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100"
+                      : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
                   )}
                 >
                   {group.groupIcon}
@@ -326,7 +331,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   />
                 </button>
                 {isOpen && (
-                  <div className="ml-4 mt-0.5 space-y-0.5 border-l border-gray-200 dark:border-gray-600 pl-3">
+                  <div className="ml-4 mt-0.5 space-y-0.5 border-l border-gray-200 pl-3">
                     {group.items.map((item) => (
                       <Link
                         key={`${group.groupLabel}-${item.href}`}
@@ -336,7 +341,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                           "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                           pathname === item.href
                             ? "font-medium text-primary"
-                            : "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200"
+                            : "text-gray-500 hover:bg-gray-100 hover:text-gray-800"
                         )}
                       >
                         {item.icon}
@@ -350,9 +355,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           })}
         </nav>
 
-        <div className="border-t dark:border-gray-700 p-4">
-          <div className="mb-2 text-xs text-gray-500 dark:text-gray-400 truncate">{user.name}</div>
-          <div className="mb-3 text-xs text-gray-400 dark:text-gray-500">{user.erp_id} · {user.base_role}</div>
+        <div className="border-t p-4">
+          <div className="mb-2 text-xs text-gray-500 truncate">{user.name}</div>
+          <div className="mb-3 text-xs text-gray-400">{user.erp_id} · {user.base_role}</div>
           <button
             onClick={logout}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
@@ -365,24 +370,22 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* Main content */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-16 items-center gap-4 border-b dark:border-gray-700 bg-white dark:bg-gray-800 px-4 lg:px-6">
+        <header className="flex h-16 items-center gap-4 border-b bg-white px-4 lg:px-6">
           <button onClick={() => setSidebarOpen(true)} className="lg:hidden">
-            <Menu className="h-6 w-6 dark:text-gray-300" />
+            <Menu className="h-6 w-6" />
           </button>
-          <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex-1">
+          <h1 className="text-lg font-semibold text-gray-900 flex-1">
             {activeTitle}
           </h1>
-
-          <ThemeToggle />
 
           {/* Bell notification button */}
           <div ref={bellRef} className="relative">
             <button
               onClick={openBell}
-              className="relative rounded-full p-2 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              className="relative rounded-full p-2 hover:bg-gray-100 transition-colors"
               aria-label="Notifications"
             >
-              <Bell className="h-5 w-5 text-gray-600 dark:text-gray-300" />
+              <Bell className="h-5 w-5 text-gray-600" />
               {unreadCount > 0 && (
                 <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
                   {unreadCount > 9 ? "9+" : unreadCount}
@@ -391,10 +394,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </button>
 
             {bellOpen && (
-              <div className="absolute right-0 top-10 z-50 w-80 rounded-lg border dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg">
-                <div className="flex items-center justify-between border-b dark:border-gray-700 px-4 py-2.5">
-                  <span className="text-sm font-semibold dark:text-gray-100">Notifications</span>
-                  <button onClick={() => setBellOpen(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+              <div className="absolute right-0 top-10 z-50 w-80 rounded-lg border bg-white shadow-lg">
+                <div className="flex items-center justify-between border-b px-4 py-2.5">
+                  <span className="text-sm font-semibold">Notifications</span>
+                  <button onClick={() => setBellOpen(false)} className="text-gray-400 hover:text-gray-600">
                     <X className="h-4 w-4" />
                   </button>
                 </div>
@@ -405,7 +408,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     notifications.map((n) => (
                       <div
                         key={n.id}
-                        className={`flex gap-3 border-b dark:border-gray-700 px-4 py-3 last:border-b-0 ${!n.is_read ? "bg-blue-50 dark:bg-blue-900/30" : "dark:bg-gray-800"}`}
+                        className={`flex gap-3 border-b px-4 py-3 last:border-b-0 ${!n.is_read ? "bg-blue-50" : ""}`}
                       >
                         <Bell className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
                         <div className="min-w-0">
@@ -427,7 +430,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6 dark:bg-gray-900">{children}</main>
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6">{children}</main>
       </div>
     </div>
   );

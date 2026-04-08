@@ -17,19 +17,6 @@
     --radius: 0.5rem;
   }
 
-  .dark {
-    --background: 222 47% 7%;
-    --foreground: 210 40% 96%;
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
-    --border: 217 33% 22%;
-    --primary: 221 83% 60%;
-    --primary-foreground: 0 0% 100%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --ring: 221 83% 60%;
-  }
-
   * {
     @apply border-border;
   }
